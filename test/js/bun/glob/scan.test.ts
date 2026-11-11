@@ -1283,7 +1283,7 @@ describe("a `.` or `..` segment after `**/name`", () => {
   );
 
   describe.skipIf(!canCreateDirSymlink)("behind a followed symlink", () => {
-    // `dir/lnk` is `d2/sub`.
+    // `dir/lnk` and `d2/alias` are `d2/sub`.
     function linkedTree() {
       const dir = tempDir("glob-scan-globstar-dot-link", {
         "dir/keep.txt": "x",
@@ -1292,6 +1292,7 @@ describe("a `.` or `..` segment after `**/name`", () => {
         "d2/sub/deep/h.txt": "x",
       });
       fs.symlinkSync(path.join("..", "d2", "sub"), path.join(String(dir), "dir", "lnk"), "dir");
+      fs.symlinkSync("sub", path.join(String(dir), "d2", "alias"), "dir");
       return dir;
     }
     const scan = (cwd: string, pattern: string, absolute = false) =>
@@ -1310,9 +1311,18 @@ describe("a `.` or `..` segment after `**/name`", () => {
       expect(scan(String(dir), "**/lnk/deep/../g.txt", true)).toEqual([`${cwd}/dir/lnk/g.txt`]);
     });
 
-    // A known gap: `lnk/..` is `d2`, which has `f.txt`, but as text in an absolute path it is `dir`.
-    // The walk leaves the segment unresolved: https://github.com/oven-sh/bun/pull/46366
-    test.each(["**/lnk/../f.txt", "**/lnk/./../f.txt"])("%j lists nothing", pattern => {
+    // `d2/alias/..` is `d2`, for the file system and as text in a joined path.
+    test("`..` leaves a link whose target is beside it", () => {
+      using dir = linkedTree();
+      const cwd = String(dir).replaceAll("\\", "/");
+      expect(scan(String(dir), "**/alias/../f.txt")).toEqual(["d2/alias/../f.txt"]);
+      expect(scan(String(dir), "**/alias/../f.txt", true)).toEqual([`${cwd}/d2/f.txt`]);
+      expect(scan(String(dir), "**/alias/deep/../../f.txt")).toEqual(["d2/alias/deep/../../f.txt"]);
+    });
+
+    // `dir/lnk/..` is `d2` for the file system, which has `f.txt`. As text in a joined path it is
+    // `dir`. No path names the match in both ways, so the walk leaves the segment unresolved.
+    test.each(["**/lnk/../f.txt", "**/lnk/./../f.txt", "**/lnk/deep/../../f.txt"])("%j lists nothing", pattern => {
       using dir = linkedTree();
       expect({ relative: scan(String(dir), pattern), absolute: scan(String(dir), pattern, true) }).toEqual({
         relative: [],

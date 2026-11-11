@@ -615,7 +615,8 @@ impl<'a, A: Accessor, const SENTINEL: bool> Iterator<'a, A, SENTINEL> {
             }
             // eval_dir already collapsed the `**` runs of a multi-index set.
             if self.walker.dot_after_globstar {
-                self.walker.requeue_dot_component(&mut work_item);
+                self.walker
+                    .requeue_dot_component(&mut work_item, self.cwd_fd);
             }
             work_item.active
         };
@@ -2031,18 +2032,17 @@ impl<A: Accessor, const SENTINEL: bool> GlobWalker<A, SENTINEL> {
 
     /// No entry is named `.` or `..`: that member of a multi-index set gets a work item of its own.
     #[cold]
-    fn requeue_dot_component(&mut self, item: &mut WorkItem<A>) {
-        let Some((dot, goes_up)) =
-            dot_member(&self.pattern_components, &self.pattern, &item.active)
-        else {
+    fn requeue_dot_component(&mut self, item: &mut WorkItem<A>, cwd_fd: A::Handle) {
+        let Some(dot) = dot_member_to_requeue(
+            &self.pattern_components,
+            &self.pattern,
+            &item.active,
+            work_item_logical_path(&item.path),
+            !self.followed_links.is_empty(),
+            &|path| A::statat(cwd_fd, path),
+        ) else {
             return;
         };
-        let is_link_target =
-            item.fd.is_some() || self.followed_links.len() > item.followed_links_len;
-        // The kernel and an absolute join disagree on `link/..`, so it stays unresolved (#46366).
-        if goes_up && is_link_target {
-            return;
-        }
         item.active.unset(dot);
         let active = self.single_set(dot as u32);
         // The caller copied the path into its buffer already.
@@ -2309,13 +2309,16 @@ fn is_dot_segment(component: &[u8]) -> bool {
     matches!(component, b"." | b"..")
 }
 
-/// The `.` or `..` member of `active`, and whether the run of them that starts there holds a `..`.
+/// The `.` or `..` member of `active` to move into a work item of its own.
 #[inline(never)]
-fn dot_member(
+fn dot_member_to_requeue(
     components: &[Component],
     pattern: &[u8],
     active: &ComponentSet,
-) -> Option<(usize, bool)> {
+    dir: &[u8],
+    behind_followed_link: bool,
+    stat: &dyn Fn(&ZStr) -> Maybe<Stat>,
+) -> Option<usize> {
     let mut members = active.iterator::<true, true>();
     let dot = loop {
         let index = members.next()?;
@@ -2323,12 +2326,47 @@ fn dot_member(
             break index;
         }
     };
-    let goes_up = components[dot..]
-        .iter()
-        .map(|component| component.pattern_slice(pattern))
-        .take_while(|text| is_dot_segment(text))
-        .any(|text| text == b"..");
-    Some((dot, goes_up))
+    if !behind_followed_link {
+        return Some(dot);
+    }
+    let run = || {
+        components[dot..]
+            .iter()
+            .map(|component| component.pattern_slice(pattern))
+            .take_while(|text| is_dot_segment(text))
+    };
+    if !run().any(|text| text == b"..") {
+        return Some(dot);
+    }
+    // A `..` that leaves a followed link is one directory for the kernel and another in a joined
+    // path. The index moves only when both name one directory.
+    let mut written = bun_paths::path_buffer_pool::get();
+    let mut len = dir.len();
+    written.get_mut(..len)?.copy_from_slice(dir);
+    for text in run() {
+        if len != 0 {
+            *written.get_mut(len)? = b'/';
+            len += 1;
+        }
+        written
+            .get_mut(len..len + text.len())?
+            .copy_from_slice(text);
+        len += text.len();
+    }
+    *written.get_mut(len)? = 0;
+    let written = ZStr::from_slice_with_nul(&written[..=len]);
+    let mut joined = bun_paths::path_buffer_pool::get();
+    let mut joined: &ZStr = resolve_path::join_z_buf::<bun_paths::platform::Auto>(
+        &mut joined[..],
+        &[written.as_bytes()],
+    );
+    if joined.as_bytes().is_empty() {
+        joined = ZStr::from_slice_with_nul(b".\0");
+    }
+    match (stat(written), stat(joined)) {
+        (Ok(a), Ok(b)) if a.st_dev == b.st_dev && a.st_ino == b.st_ino => Some(dot),
+        _ => None,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

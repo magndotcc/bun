@@ -827,13 +827,16 @@ describe("bun", () => {
     runInCwdSuccess({ cwd: String(dir), pattern: "*", target_pattern: /out-pkga/ });
   });
 
-  test("a `..` segment after a symlinked directory under `**` matches nothing", () => {
+  test("a `..` segment that leaves a symlinked directory under `**` matches nothing", () => {
     using dir = tempDir("filter-globstar-dotdot-link", {
       "packages/a/package.json": JSON.stringify({ name: "a", scripts: { present: "echo out-a" } }),
       "elsewhere/real/package.json": JSON.stringify({ name: "real", scripts: { present: "echo out-real" } }),
       "elsewhere/real/other/package.json": JSON.stringify({ name: "other", scripts: { present: "echo out-other" } }),
-      "elsewhere/real/sub/keep": "",
-      "package.json": JSON.stringify({ name: "ws", workspaces: ["packages/*", "packages/**/lnk/../*"] }),
+      "elsewhere/real/sub/deep/keep": "",
+      "package.json": JSON.stringify({
+        name: "ws",
+        workspaces: ["packages/*", "packages/**/lnk/../*", "packages/**/lnk/deep/../../*"],
+      }),
     });
     // "junction" so the link is creatable on unprivileged Windows; the type is ignored on POSIX.
     symlinkSync(join(String(dir), "elsewhere", "real", "sub"), join(String(dir), "packages", "a", "lnk"), "junction");
