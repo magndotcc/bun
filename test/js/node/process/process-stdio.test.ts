@@ -184,6 +184,36 @@ describe.concurrent("process-stdio", () => {
     expect({ stdout, stderr }).toEqual({ stdout: "written\n", stderr: "callback null\n" });
     expect(exitCode).toBe(0);
   });
+
+  // Over a pipe node's process.stdout is a net.Socket: 'finish' comes from the event loop, after the promise jobs of the
+  // turn that called end(). Over a file it is a SyncWriteStream, which finishes on the next tick, ahead of them.
+  test.each(["stdout", "stderr"] as const)("process.%s 'finish' after end(): a pipe, a regular file", async name => {
+    const other = name === "stdout" ? "stderr" : "stdout";
+    const script = `
+      const stream = process.${name};
+      let heard = "not heard";
+      stream.end("end\\n");
+      Promise.resolve().then(() => stream.on("finish", () => (heard = "heard")));
+      setImmediate(() => setImmediate(() => process.${other}.write(heard)));
+    `;
+    using dir = tempDir("process-stdio-finish", {});
+    async function run(target: "pipe" | Bun.BunFile) {
+      await using proc = spawn({
+        cmd: [bunExe(), "-e", script],
+        env: bunEnv,
+        stdin: "ignore",
+        stdout: name === "stdout" ? target : "pipe",
+        stderr: name === "stderr" ? target : "pipe",
+      });
+      const [heard, exitCode] = await Promise.all([(proc[other] as ReadableStream).text(), proc.exited]);
+      return { heard, exitCode };
+    }
+    const [pipe, regularFile] = await Promise.all([run("pipe"), run(Bun.file(path.join(String(dir), "out.txt")))]);
+    expect({ pipe, regularFile }).toEqual({
+      pipe: { heard: "heard", exitCode: 0 },
+      regularFile: { heard: "not heard", exitCode: 0 },
+    });
+  });
 });
 
 // Like Node, process.stdout/stderr put O_NONBLOCK on fd 1/2 when they are pipes or sockets. The flag lives on the shared open
