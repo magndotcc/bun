@@ -1044,7 +1044,8 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
     // SAFETY: as above.
     unsafe { (*el).tick_immediate_tasks(vm) };
     // SAFETY: as above; each is the one live `&mut` for this call.
-    let _ = unsafe { crate::dispatch::run_closing_tasks(&mut *el, &mut *vm, completes_before_poll) };
+    let _ =
+        unsafe { crate::dispatch::run_closing_tasks(&mut *el, &mut *vm, completes_before_poll) };
     // SAFETY: as above.
     let has_yielded_tasks = unsafe { (*el).promote_yield_tasks() };
     // A closing task, or a task that one of them queued, waits for the next turn: wake the poll for it as for an immediate.
@@ -1220,7 +1221,8 @@ unsafe fn auto_tick_active(vm: *mut VirtualMachine) {
     // SAFETY: as above.
     unsafe { (*el).tick_immediate_tasks(vm) };
     // SAFETY: as above; each is the one live `&mut` for this call.
-    let _ = unsafe { crate::dispatch::run_closing_tasks(&mut *el, &mut *vm, completes_before_poll) };
+    let _ =
+        unsafe { crate::dispatch::run_closing_tasks(&mut *el, &mut *vm, completes_before_poll) };
     // SAFETY: as above.
     let has_yielded_tasks = unsafe { (*el).promote_yield_tasks() };
     // See the matching arm in `auto_tick`.

@@ -93,9 +93,9 @@ use crate::shell::states::r#async::Async as ShellAsync;
 use crate::webcore::fetch::fetch_tasklet::FetchTasklet;
 use crate::webcore::file_sink::CloseTask as FileSinkCloseTask;
 use crate::webcore::file_sink::FlushPendingTask as FlushPendingFileSinkTask;
-use crate::webcore::file_sink::ShutdownTask as FileSinkShutdownTask;
 #[cfg(not(windows))]
 use crate::webcore::file_sink::Poll as FileSinkPoll;
+use crate::webcore::file_sink::ShutdownTask as FileSinkShutdownTask;
 use crate::webcore::s3::download_stream::S3HttpDownloadStreamingTask;
 use crate::webcore::s3::multipart::WriterCollected as S3UploadWriterCollected;
 use crate::webcore::s3::simple_request::S3HttpSimpleTask;
@@ -787,10 +787,13 @@ pub(crate) fn run_task(
             )
         }
         task_tag::FileSinkShutdownTask => {
-            feature_arm!([FileSink, Spawn, Shell], |shutdown: FileSinkShutdownTask| {
-                // SAFETY: the payload is the task embedded in a sink that holds a ref for it.
-                unsafe { FileSinkShutdownTask::run_from_js_thread(shutdown) };
-            })
+            feature_arm!(
+                [FileSink, Spawn, Shell],
+                |shutdown: FileSinkShutdownTask| {
+                    // SAFETY: the payload is the task embedded in a sink that holds a ref for it.
+                    unsafe { FileSinkShutdownTask::run_from_js_thread(shutdown) };
+                }
+            )
         }
         task_tag::FileSinkCloseTask => {
             feature_arm!([FileSink, Spawn, Shell], |close: FileSinkCloseTask| {

@@ -1870,8 +1870,8 @@ impl ShutdownTask {
             if errno == 0 && (*this).half_closes.get() {
                 (*this).half_close();
             }
-            let Some((global, callback)) = (*this).take_request() else {
-                return;
+            let Some(global) = (*this).js_global() else {
+                return (*this).release_request();
             };
             let error = match errno {
                 0 => None,
@@ -1880,9 +1880,12 @@ impl ShutdownTask {
                     let error = sys::Error::from_code_int(errno.into(), sys::Tag::write);
                     match error.to_js(global) {
                         Ok(error) => Some(error),
-                        Err(_) => return,
+                        Err(_) => return (*this).release_request(),
                     }
                 }
+            };
+            let Some(callback) = (*this).take_request() else {
+                return;
             };
             global.bun_vm().event_loop_mut().run_callback(
                 bun_jsc::ContextId::NONE,
@@ -1909,7 +1912,8 @@ impl CloseTask {
             if (*this).request.get() != StreamRequest::Close {
                 return;
             }
-            let Some((global, callback)) = (*this).take_request() else {
+            let (Some(global), Some(callback)) = ((*this).js_global(), (*this).take_request())
+            else {
                 return;
             };
             global.bun_vm().event_loop_mut().run_callback(
@@ -1953,10 +1957,22 @@ pub(crate) fn shutdown(
                     return Err(err.throw(global));
                 }
                 // The pipe did not take it all: the drain settles the slot, which has no promise.
-                sys::Result::Ok(streams::Writable::Pending(_) | streams::Writable::Backpressure(_)) => {
-                    (*this).pending.with_mut(|p| p.state = streams::PendingState::Pending);
+                sys::Result::Ok(
+                    streams::Writable::Pending(_) | streams::Writable::Backpressure(_),
+                ) => {
+                    (*this)
+                        .pending
+                        .with_mut(|p| p.state = streams::PendingState::Pending);
                 }
-                sys::Result::Ok(_) => {}
+                sys::Result::Ok(_) => {
+                    // `flush()` does not report a uv_write that is in flight. Its completion settles the slot.
+                    #[cfg(windows)]
+                    if completes_from_loop && (*this).writer.get().has_pending_data() {
+                        (*this)
+                            .pending
+                            .with_mut(|p| p.state = streams::PendingState::Pending);
+                    }
+                }
             }
         }
         if !completes_from_loop {
@@ -2018,23 +2034,24 @@ impl FileSink {
     fn set_request(&self, request: StreamRequest, cx: &bun_jsc::JsThread<'_>, callback: JSValue) {
         let global = cx.global();
         let callback = callback.with_async_context_if_needed(global);
-        self.request_callback.with_mut(|slot| slot.set(global, callback));
+        self.request_callback
+            .with_mut(|slot| slot.set(global, callback));
         self.request_context.set(cx.context().id());
         self.request_errno.set(0);
         self.request.set(request);
     }
 
     /// The request is over: its callback, for the one caller that runs it.
-    fn take_request(&self) -> Option<(&JSGlobalObject, JSValue)> {
+    fn take_request(&self) -> Option<JSValue> {
         self.request.set(StreamRequest::None);
-        let callback = self.request_callback.with_mut(|slot| slot.try_swap())?;
-        Some((self.js_global()?, callback))
+        self.request_callback.with_mut(|slot| slot.try_swap())
     }
 
     /// The request will never complete.
     fn release_request(&self) {
         self.request.set(StreamRequest::None);
-        self.request_callback.with_mut(|slot| slot.clear_without_deallocation());
+        self.request_callback
+            .with_mut(|slot| slot.clear_without_deallocation());
     }
 
     /// For `run_pending`, before it settles the slot: the error of the write that a `Shutdown` waits behind, or 0.
