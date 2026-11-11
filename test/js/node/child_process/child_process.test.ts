@@ -451,7 +451,7 @@ describe("spawn()", () => {
 
   // Node completes the end and the close of child.stdin from libuv: 'finish' after every tick and promise job of
   // the turn that called end(), and 'close' after that turn's immediates as well.
-  describe.concurrent("stdin 'finish' and 'close' come from the event loop", () => {
+  describe("stdin 'finish' and 'close' come from the event loop", () => {
     const fixture = path.join(import.meta.dir, "fixtures", "stdin-late-listener-fixture.js");
     const calls = ['end("abc")', "end()", "destroy()", 'end("abc"); destroy()'];
     const origins = [
@@ -491,42 +491,48 @@ describe("spawn()", () => {
       }),
     );
 
+    const order = path.join(import.meta.dir, "fixtures", "stdin-end-order-fixture.js");
+    const expectedOrder = {
+      'end("abc", cb)': { log: ["prefinish", "end callback null", "finish", "immediate", "close"], read: "abc" },
+      'end("abc", cb); destroy()': ["end callback ERR_STREAM_DESTROYED", "immediate", "close"],
+      "destroy(err)": ["error BOOM", "immediate", "close"],
+      "an ended stdin as the stdout of another child": { second: 0, first: 0 },
+      ...(!isWindows && {
+        "a 'finish' listener that throws": { read: "abc", code: 0, uncaught: ["from 'finish'"] },
+      }),
+      ...(isLinux && {
+        "end(cb) from an immediate, with the exit of the child due in the next poll": [
+          "prefinish",
+          "end callback null",
+          "finish",
+          "exit",
+          "immediate",
+          "close",
+        ],
+      }),
+    };
+
     async function report(exe: string, file: string) {
       await using proc = Bun.spawn({ cmd: [exe, file], env: bunEnv, stdout: "pipe", stderr: "pipe" });
       const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
       return { stderr, report: stdout && JSON.parse(stdout), exitCode };
     }
-    // The reports below are those of node v26.3.0: where there is a node to run, it prints them too.
-    const node = nodeExeAtLeast("22.0.0");
 
     it("a listener added later in the turn hears them", async () => {
       expect(await report(bunExe(), fixture)).toEqual({ stderr: "", report: expected, exitCode: 0 });
-      if (node) expect(await report(node, fixture)).toEqual({ stderr: "", report: expected, exitCode: 0 });
     });
 
     it("end() and destroy() keep node's order", async () => {
-      const expected = {
-        'end("abc", cb)': { log: ["prefinish", "end callback null", "finish", "immediate", "close"], read: "abc" },
-        'end("abc", cb); destroy()': ["end callback ERR_STREAM_DESTROYED", "immediate", "close"],
-        "destroy(err)": ["error BOOM", "immediate", "close"],
-        "an ended stdin as the stdout of another child": { second: 0, first: 0 },
-        ...(!isWindows && {
-          "a 'finish' listener that throws": { read: "abc", code: 0, uncaught: ["from 'finish'"] },
-        }),
-        ...(isLinux && {
-          "end(cb) from an immediate, with the exit of the child due in the next poll": [
-            "prefinish",
-            "end callback null",
-            "finish",
-            "exit",
-            "immediate",
-            "close",
-          ],
-        }),
-      };
-      const order = path.join(import.meta.dir, "fixtures", "stdin-end-order-fixture.js");
-      expect(await report(bunExe(), order)).toEqual({ stderr: "", report: expected, exitCode: 0 });
-      if (node) expect(await report(node, order)).toEqual({ stderr: "", report: expected, exitCode: 0 });
+      expect(await report(bunExe(), order)).toEqual({ stderr: "", report: expectedOrder, exitCode: 0 });
+    });
+
+    // The reports above are those of node v26.3.0.
+    const node = nodeExeAtLeast("22.0.0");
+    it.skipIf(!node)("node prints the same reports", async () => {
+      expect(await Promise.all([report(node!, fixture), report(node!, order)])).toEqual([
+        { stderr: "", report: expected, exitCode: 0 },
+        { stderr: "", report: expectedOrder, exitCode: 0 },
+      ]);
     });
 
     it("an unref'd child still gets 'finish' and 'close' of its stdin", async () => {

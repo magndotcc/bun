@@ -103,11 +103,13 @@ if (process.platform === "linux") {
   };
 }
 
-(async () => {
-  const report = {};
-  // One at a time, each from a timer: the cases log where the turn's immediates come.
-  for (const name in cases) {
-    report[name] = await new Promise(resolve => setTimeout(() => resolve(cases[name]()), 1));
-  }
-  console.log(JSON.stringify(report, null, 2));
-})();
+// Each case starts from a timer of its own: the cases log where the immediates of their turn come.
+const report = {};
+const pending = [];
+for (const name in cases) {
+  report[name] = undefined;
+  pending.push(
+    new Promise(resolve => setTimeout(() => resolve(cases[name]()), 1)).then(result => (report[name] = result)),
+  );
+}
+Promise.all(pending).then(() => console.log(JSON.stringify(report, null, 2)));
