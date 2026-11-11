@@ -34,34 +34,42 @@ const later = {
   "one setImmediate": add => setImmediate(add),
 };
 
-function cell(call, start, wait) {
+// One child for a call and the place it runs in. Each of the later points adds listeners of its own.
+function row(call, start) {
   return new Promise(resolve => {
     const child = spawn(echo[0], echo.slice(1), { stdio: ["pipe", "pipe", "inherit"] });
     const stdin = child.stdin;
-    const heard = [];
+    const heard = {};
     child.stdout.resume();
     start(() => {
       call(stdin);
-      wait(() => {
-        for (const event of ["finish", "close"]) stdin.on(event, () => heard.push(event));
-      });
+      for (const when in later) {
+        const events = (heard[when] = []);
+        later[when](() => {
+          for (const event of ["finish", "close"]) stdin.on(event, () => events.push(event));
+        });
+      }
     }, child);
     // Two turns of the loop past the child's 'close', so that an event that trails it is in the report.
-    child.on("close", () => setImmediate(() => setImmediate(() => resolve(heard.join(", ") || "nothing"))));
+    child.on("close", () =>
+      setImmediate(() =>
+        setImmediate(() => {
+          for (const when in heard) heard[when] = heard[when].join(", ") || "nothing";
+          resolve(heard);
+        }),
+      ),
+    );
   });
 }
 
-// Every cell starts from the main script: in a promise job, the queued promise jobs run ahead of the nextTick queue.
+// Every row starts from the main script: in a promise job, the queued promise jobs run ahead of the nextTick queue.
 const report = {};
-const cells = [];
+const rows = [];
 for (const what in calls) {
   report[what] = {};
   for (const where in from) {
-    const row = (report[what][where] = {});
-    for (const when in later) {
-      row[when] = undefined;
-      cells.push(cell(calls[what], from[where], later[when]).then(result => (row[when] = result)));
-    }
+    report[what][where] = undefined;
+    rows.push(row(calls[what], from[where]).then(heard => (report[what][where] = heard)));
   }
 }
-Promise.all(cells).then(() => console.log(JSON.stringify(report, null, 2)));
+Promise.all(rows).then(() => console.log(JSON.stringify(report, null, 2)));

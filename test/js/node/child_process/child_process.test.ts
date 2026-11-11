@@ -9,6 +9,7 @@ import {
   isRoot,
   isWindows,
   nodeExe,
+  nodeExeAtLeast,
   runBunInstall,
   shellExe,
   tempDir,
@@ -446,6 +447,90 @@ describe("spawn()", () => {
     expect(await stdout).toBe(String(4 * chunk.length));
     expect(order).toEqual(["write", "end", "finish"]);
     expect(await exited).toBe(0);
+  });
+
+  // Node completes the end and the close of child.stdin from libuv: 'finish' after every tick and promise job of
+  // the turn that called end(), and 'close' after that turn's immediates as well.
+  describe.concurrent("stdin 'finish' and 'close' come from the event loop", () => {
+    const fixture = path.join(import.meta.dir, "fixtures", "stdin-late-listener-fixture.js");
+    const calls = ['end("abc")', "end()", "destroy()", 'end("abc"); destroy()'];
+    const origins = [
+      "the main script",
+      "a nextTick callback",
+      "the child's 'spawn' listener",
+      "a promise job",
+      "a timer",
+      "a setImmediate callback",
+      "an fs callback",
+      "a 'data' listener of the child's stdout",
+    ];
+    const sameTurn = [
+      "one tick",
+      "one promise job",
+      "two promise jobs",
+      "a tick, then a promise job",
+      "a promise job, then a tick",
+    ];
+    // What a listener hears that is added that much later than the call, by node v26.3.0.
+    const expected = Object.fromEntries(
+      calls.map(call => {
+        const ends = !call.includes("destroy()");
+        return [
+          call,
+          Object.fromEntries(
+            origins.map(origin => [
+              origin,
+              {
+                ...Object.fromEntries(sameTurn.map(later => [later, ends ? "finish, close" : "close"])),
+                // 'finish' precedes the immediates. So does the 'close' of a destroy() that an immediate called.
+                "one setImmediate": ends || origin !== "a setImmediate callback" ? "close" : "nothing",
+              },
+            ]),
+          ),
+        ];
+      }),
+    );
+
+    async function report(exe: string) {
+      await using proc = Bun.spawn({ cmd: [exe, fixture], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      return { stderr, report: stdout && JSON.parse(stdout), exitCode };
+    }
+
+    it("a listener added later in the turn hears them", async () => {
+      expect(await report(bunExe())).toEqual({ stderr: "", report: expected, exitCode: 0 });
+    });
+
+    const node = nodeExeAtLeast("22.0.0");
+    it.skipIf(!node)("node gives the same report", async () => {
+      expect(await report(node!)).toEqual({ stderr: "", report: expected, exitCode: 0 });
+    });
+
+    it("an await of 'finish' behind another await goes on", async () => {
+      await using proc = Bun.spawn({
+        cmd: [
+          bunExe(),
+          "-e",
+          `const { spawn } = require("node:child_process"), { once } = require("node:events");
+           (async () => {
+             const child = spawn(${JSON.stringify(isWindows ? bunExe() : "cat")}, ${JSON.stringify(isWindows ? ["-e", "process.stdin.pipe(process.stdout)"] : [])});
+             let answer = "";
+             child.stdout.setEncoding("utf8").on("data", chunk => (answer += chunk));
+             const closed = once(child, "close");
+             child.stdin.end("3 jobs");
+             await once(child, "spawn");
+             await once(child.stdin, "finish");
+             await closed;
+             console.log("answer [" + answer + "]");
+           })();`,
+        ],
+        env: bunEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect({ stdout, stderr, exitCode }).toEqual({ stdout: "answer [3 jobs]\n", stderr: "", exitCode: 0 });
+    });
   });
 
   it("should allow us to timeout hanging processes", async () => {
