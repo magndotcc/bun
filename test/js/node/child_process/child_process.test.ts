@@ -491,19 +491,62 @@ describe("spawn()", () => {
       }),
     );
 
-    async function report(exe: string) {
-      await using proc = Bun.spawn({ cmd: [exe, fixture], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+    async function report(exe: string, file: string) {
+      await using proc = Bun.spawn({ cmd: [exe, file], env: bunEnv, stdout: "pipe", stderr: "pipe" });
       const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
       return { stderr, report: stdout && JSON.parse(stdout), exitCode };
     }
+    // The reports below are those of node v26.3.0: where there is a node to run, it prints them too.
+    const node = nodeExeAtLeast("22.0.0");
 
     it("a listener added later in the turn hears them", async () => {
-      expect(await report(bunExe())).toEqual({ stderr: "", report: expected, exitCode: 0 });
+      expect(await report(bunExe(), fixture)).toEqual({ stderr: "", report: expected, exitCode: 0 });
+      if (node) expect(await report(node, fixture)).toEqual({ stderr: "", report: expected, exitCode: 0 });
     });
 
-    const node = nodeExeAtLeast("22.0.0");
-    it.skipIf(!node)("node gives the same report", async () => {
-      expect(await report(node!)).toEqual({ stderr: "", report: expected, exitCode: 0 });
+    it("end() and destroy() keep node's order", async () => {
+      const expected = {
+        'end("abc", cb)': { log: ["prefinish", "end callback null", "finish", "immediate", "close"], read: "abc" },
+        'end("abc", cb); destroy()': ["end callback ERR_STREAM_DESTROYED", "immediate", "close"],
+        "destroy(err)": ["error BOOM", "immediate", "close"],
+        "an ended stdin as the stdout of another child": { second: 0, first: 0 },
+        ...(!isWindows && {
+          "a 'finish' listener that throws": { read: "abc", code: 0, uncaught: ["from 'finish'"] },
+        }),
+        ...(isLinux && {
+          "end(cb) from an immediate, with the exit of the child due in the next poll": [
+            "prefinish",
+            "end callback null",
+            "finish",
+            "exit",
+            "immediate",
+            "close",
+          ],
+        }),
+      };
+      const order = path.join(import.meta.dir, "fixtures", "stdin-end-order-fixture.js");
+      expect(await report(bunExe(), order)).toEqual({ stderr: "", report: expected, exitCode: 0 });
+      if (node) expect(await report(node, order)).toEqual({ stderr: "", report: expected, exitCode: 0 });
+    });
+
+    it("an unref'd child still gets 'finish' and 'close' of its stdin", async () => {
+      await using proc = Bun.spawn({
+        cmd: [
+          bunExe(),
+          "-e",
+          `const { spawn } = require("node:child_process");
+           const child = spawn(${JSON.stringify(isWindows ? bunExe() : "cat")}, ${JSON.stringify(isWindows ? ["-e", "process.stdin.resume()"] : [])}, { stdio: ["pipe", "ignore", "inherit"] });
+           child.unref();
+           child.stdin.on("finish", () => console.log("finish"));
+           child.stdin.on("close", () => console.log("close"));
+           child.stdin.end("abc");`,
+        ],
+        env: bunEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect({ stdout, stderr, exitCode }).toEqual({ stdout: "finish\nclose\n", stderr: "", exitCode: 0 });
     });
 
     it("an await of 'finish' behind another await goes on", async () => {
