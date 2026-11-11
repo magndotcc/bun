@@ -103,6 +103,12 @@ bitflags::bitflags! {
         /// `IS_UNUSED` for its own reasons (an unused TypeScript import, a macro
         /// import), and those records must never be resolved.
         const IS_BARREL_DEFERRED = 1 << 18;
+
+        /// An HTML stylesheet `<link>` whose `media` can fail to match. `range` is its start tag.
+        const HTML_LINK_MEDIA = 1 << 19;
+
+        /// An HTML `<link rel="preload" as="style">`. It does not apply the stylesheet that it names.
+        const HTML_LINK_PRELOAD = 1 << 20;
     }
 }
 

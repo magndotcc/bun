@@ -173,7 +173,7 @@ export function editCssContent(id: string, newContent: string) {
   if (!entry) return;
   let sheet = entry.sheet;
   if (!entry.sheet) {
-    sheet = entry.sheet = new CSSStyleSheet();
+    sheet = entry.sheet = new CSSStyleSheet({ media: entry.link?.media });
     sheet.replace(newContent);
     document.adoptedStyleSheets.push(sheet);
 

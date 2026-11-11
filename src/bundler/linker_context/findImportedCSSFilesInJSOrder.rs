@@ -1,8 +1,10 @@
 use crate::mal_prelude::*;
 use bun_alloc::Arena;
-use bun_ast::ImportRecord;
+use bun_ast::{ImportRecord, ImportRecordFlags};
 use bun_collections::VecExt;
 
+use crate::HTMLScanner::{conditions_of_link_media, media_of_link};
+use crate::bun_css::ImportConditions;
 use crate::{Index, LinkerContext};
 use bun_collections::DynamicBitSet as BitSet;
 
@@ -35,7 +37,18 @@ pub(crate) fn find_imported_css_files_in_js_order(
     }
     let mut visited = BitSet::init_empty(this.graph.files.len()).expect("oom");
     let mut order: Vec<Index> = Vec::new();
+    visit_in_js_order(this, entry_point, entry_point, &mut visited, &mut order);
+    order
+}
 
+/// `find_imported_css_files_in_js_order` from `start`: adds to `order` the CSS files that are not `visited` yet.
+fn visit_in_js_order(
+    this: &LinkerContext,
+    entry_point: Index,
+    start: Index,
+    visited: &mut BitSet,
+    order: &mut Vec<Index>,
+) {
     let all_import_records = this.graph.ast.items_import_records();
     let all_loaders = this.parse_graph().input_files.items_loader();
     let all_parts = this.graph.ast.items_parts();
@@ -48,7 +61,7 @@ pub(crate) fn find_imported_css_files_in_js_order(
         Enter(Index),
         Leave(Index),
     }
-    let mut stack: Vec<Frame> = vec![Frame::Enter(entry_point)];
+    let mut stack: Vec<Frame> = vec![Frame::Enter(start)];
 
     while let Some(frame) = stack.pop() {
         let source_index = match frame {
@@ -93,6 +106,57 @@ pub(crate) fn find_imported_css_files_in_js_order(
         }
         stack[mark..].reverse();
     }
+}
 
+/// `find_imported_css_files_in_js_order` for an HTML page. `conditions[i]` is the `media` of the link that loads file `i`.
+pub(crate) fn find_css_files_of_html_page<'a>(
+    this: &LinkerContext<'a>,
+    temp: &Arena,
+    page: Index,
+    conditions: &mut Vec<Option<&'a ImportConditions>>,
+) -> Vec<Index> {
+    let records: &[ImportRecord] =
+        this.graph.ast.items_import_records()[page.get() as usize].as_slice();
+    let loaders = this.parse_graph().input_files.items_loader();
+    let has_media = |record: &ImportRecord| {
+        record.flags.contains(ImportRecordFlags::HTML_LINK_MEDIA)
+            && record.source_index.is_valid()
+            && loaders[record.source_index.get() as usize].is_css()
+    };
+    if !records.iter().any(has_media) {
+        return find_imported_css_files_in_js_order(this, temp, page);
+    }
+
+    let mut order: Vec<Index> = Vec::new();
+    let mut visited = BitSet::init_empty(this.graph.files.len()).expect("oom");
+    visited.set(page.get() as usize);
+    for record in records {
+        if has_media(record) {
+            // Not `visited`: a script or another link that loads the file applies it for every medium.
+            order.push(record.source_index);
+            conditions.resize(order.len() - 1, None);
+            conditions.push(link_media_conditions(this, page, record));
+            continue;
+        }
+        let preloads_a_media_link = record.flags.contains(ImportRecordFlags::HTML_LINK_PRELOAD)
+            && (records.iter())
+                .any(|link| has_media(link) && link.source_index == record.source_index);
+        if record.source_index.is_valid() && !preloads_a_media_link {
+            visit_in_js_order(this, page, record.source_index, &mut visited, &mut order);
+        }
+    }
     order
+}
+
+/// The `media` of `link`, an `HTML_LINK_MEDIA` record of the HTML file `page`. `None` if it does not parse.
+fn link_media_conditions<'a>(
+    this: &LinkerContext<'a>,
+    page: Index,
+    link: &ImportRecord,
+) -> Option<&'a ImportConditions> {
+    let source = &this.parse_graph().input_files.items_source()[page.get() as usize];
+    let tag = link.range.loc.start as usize..(link.range.loc.start + link.range.len) as usize;
+    let media = media_of_link(source.contents.get(tag)?)?;
+    let arena = this.graph.arena();
+    Some(arena.alloc(conditions_of_link_media(&media, arena)?))
 }

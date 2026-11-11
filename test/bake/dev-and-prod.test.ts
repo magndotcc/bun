@@ -1,4 +1,5 @@
 // Tests which apply to both dev and prod. They are run twice.
+import { expect } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
 
@@ -60,6 +61,69 @@ devAndProductionTest("invalid html does not crash 1", {
     await c.style("body").backgroundColor.expect.toBe("red");
   },
 });
+// https://github.com/oven-sh/bun/issues/18526
+const pageWithPrintStylesheet = (headEnd: string) => `
+  <!DOCTYPE html>
+  <html>
+    <head>
+      <link rel="stylesheet" href="screen.css">
+      <link rel="stylesheet" href="print.css" media="print">
+      <script type="module" src="index.ts"></script>
+    ${headEnd}
+    <body></body>
+  </html>
+`;
+for (const [shape, files] of Object.entries({
+  "": {
+    "index.html": pageWithPrintStylesheet("</head>"),
+    "print.css": `.print { color: black; }`,
+  },
+  " in a document with no head end tag": {
+    "index.html": pageWithPrintStylesheet(""),
+    "print.css": `.print { color: black; }`,
+  },
+  " when a plugin loads the stylesheet": {
+    "index.html": pageWithPrintStylesheet("</head>"),
+    "print.css": `the plugin replaces this text`,
+    "bunfig.toml": `[serve.static]\nplugins = ["./plugin.ts"]\n`,
+    "plugin.ts": `
+      export default {
+        name: "print",
+        setup(build) {
+          build.onLoad({ filter: /print\\.css$/ }, () => ({ contents: ".print { color: black; }", loader: "css" }));
+        },
+      };
+    `,
+  },
+})) {
+  devAndProductionTest("stylesheet link with media applies its stylesheet for that media only" + shape, {
+    files: {
+      "screen.css": `.screen { color: red; }`,
+      "index.ts": `console.log("ready");`,
+      ...files,
+    },
+    async test(dev) {
+      await using c = await dev.client("/");
+      await c.expectMessage("ready");
+      // The media of each rule: that of its <link> in development, that of its "@media" block in production.
+      const rules = await c.js<{ selector: string; media: string }[]>`
+        const rules = [];
+        for (const link of document.querySelectorAll("link")) {
+          if (!link.sheet) await new Promise(resolve => link.addEventListener("load", resolve, { once: true }));
+          for (const rule of link.sheet.cssRules) {
+            if (rule.selectorText) rules.push({ selector: rule.selectorText, media: link.media });
+            else for (const inner of rule.cssRules) rules.push({ selector: inner.selectorText, media: rule.conditionText });
+          }
+        }
+        return rules.sort((a, b) => a.selector.localeCompare(b.selector));
+      `;
+      expect(rules).toEqual([
+        { selector: ".print", media: "print" },
+        { selector: ".screen", media: "" },
+      ]);
+    },
+  });
+}
 devAndProductionTest("missing head end tag works fine", {
   files: {
     "public/index.html": `
