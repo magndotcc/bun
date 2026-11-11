@@ -1092,6 +1092,8 @@ impl FileSink {
     }
 
     /// `flush()`, up to the value that it returns. A `Pending` result has credited the pending slot and not opened it.
+    // PERF: inlined, so that `flush()` from JS does not pay a call and a copy of the result for the split.
+    #[inline(always)]
     fn flush_buffered(&self) -> sys::Result<streams::Writable> {
         let had_buffered_data = self.writer.get().has_pending_data();
         // SAFETY(JsCell): `IOWriter::flush` is pure I/O; no JS re-entry while
