@@ -1088,13 +1088,14 @@ impl FileSink {
             return sys::Result::Ok(JSValue::UNDEFINED);
         }
 
-        self.flush_buffered().map(|result| result.to_js(cx))
+        self.flush_buffered(|result| result.to_js(cx))
     }
 
-    /// `flush()`, up to the value that it returns. A `Pending` result has credited the pending slot and not opened it.
-    // PERF: inlined, so that `flush()` from JS does not pay a call and a copy of the result for the split.
+    /// `flush()`, up to the value that it returns: `report` takes it. A `Pending` result has credited the pending
+    /// slot and not opened it.
+    // PERF: inlined with `report`, so that `flush()` from JS pays no call and no copy of the result for the split.
     #[inline(always)]
-    fn flush_buffered(&self) -> sys::Result<streams::Writable> {
+    fn flush_buffered<R>(&self, report: impl FnOnce(streams::Writable) -> R) -> sys::Result<R> {
         let had_buffered_data = self.writer.get().has_pending_data();
         // SAFETY(JsCell): `IOWriter::flush` is pure I/O; no JS re-entry while
         // the `&mut IOWriter` is held.
@@ -1122,7 +1123,7 @@ impl FileSink {
         // bytes it pushed out. It only reaches here when no write is pending.
         match self.to_result(rc, flushed) {
             streams::Writable::Err(_) => unreachable!(),
-            result => sys::Result::Ok(result),
+            result => sys::Result::Ok(report(result)),
         }
     }
 
@@ -1952,21 +1953,25 @@ pub(crate) fn shutdown(
         let mut errno = 0;
         // A write that is parked flushes everything: `run_pending` queues the completion behind it.
         if (*this).pending.get().state != streams::PendingState::Pending && !(*this).done.get() {
-            match (*this).flush_buffered() {
+            let parked = (*this).flush_buffered(|result| {
+                matches!(
+                    result,
+                    streams::Writable::Pending(_) | streams::Writable::Backpressure(_)
+                )
+            });
+            match parked {
                 sys::Result::Err(err) if completes_from_loop => errno = err.errno,
                 sys::Result::Err(err) => {
                     use bun_jsc::SysErrorJsc as _;
                     return Err(err.throw(global));
                 }
                 // The pipe did not take it all: the drain settles the slot, which has no promise.
-                sys::Result::Ok(
-                    streams::Writable::Pending(_) | streams::Writable::Backpressure(_),
-                ) => {
+                sys::Result::Ok(true) => {
                     (*this)
                         .pending
                         .with_mut(|p| p.state = streams::PendingState::Pending);
                 }
-                sys::Result::Ok(_) => {
+                sys::Result::Ok(false) => {
                     // `flush()` does not report a uv_write that is in flight. Its completion settles the slot.
                     #[cfg(windows)]
                     if completes_from_loop && (*this).writer.get().has_pending_data() {
