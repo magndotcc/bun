@@ -1833,6 +1833,6 @@
     "aot/test-run-function-source-enum-namespace.test.ts",
     "aot/test-run-function-source-enum-read.test.ts",
     "aot/typescript-that-tsc-rejects.test.ts",
-    "aot/a-spy-on-the-length-or-name-of-a-function-stays-and-is-what-bind-reads.test.ts"
+    "aot/a-spy-on-what-a-compiled-function-answers-for-but-does-not-store.test.ts"
   ]
 }
