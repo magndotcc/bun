@@ -18,8 +18,15 @@ using namespace WebCore;
 
 class JSMockFunction;
 
+// Whose automock it is. A test file's ends with the file, and what it stored in place is taken out then.
+// A preload's stands for every test file. So does that of other code that runs once for them all: see Bun::runsOnceForEveryTestFile().
+enum class AutomockOwner : uint8_t {
+    TestFile,
+    Preload,
+};
+
 // Automocks a module's exports. With `spy` the mocks call through, and nested objects are mutated in place unless `leaveOriginalAlone`.
-JSC::JSValue mockObject(Zig::GlobalObject*, JSC::JSValue exports, bool spy, bool leaveOriginalAlone = false);
+JSC::JSValue mockObject(Zig::GlobalObject*, JSC::JSValue exports, bool spy, bool leaveOriginalAlone, AutomockOwner);
 
 // For `vi.dynamicImportSettled()`. `import` is the module loader's own promise for an `import()`, not the one script gets.
 // `key` is null unless there are module mocks.
@@ -67,6 +74,9 @@ public:
 
     // A JSMap from the promises given to didStartDynamicImport() to their keys. Settled ones get swept.
     JSC::WriteBarrier<JSC::Unknown> dynamicImports;
+
+    // A JSWeakMap from an object to the properties in which the `{ spy: true }` automocks of this test file stored in place, created on first use.
+    JSC::WriteBarrier<JSC::Unknown> automockWrites;
 
     // True until the first test starts. A preload, or a beforeAll() of one, can only run before that.
     bool preloadMayBeRunning { true };

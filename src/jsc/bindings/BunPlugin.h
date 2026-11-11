@@ -150,6 +150,8 @@ public:
         unsigned testFile = 1;
         // The modules that have called mock.module(), vi.mock() and the like since the running test file started.
         WTF::UncheckedKeyHashSet<String> mockingModules = {};
+        // The modules whose vi.mockObject(value, { spy: true }) has stored a spy in place since then. The spies go with the test file, so these run again too.
+        WTF::UncheckedKeyHashSet<String> spyingModules = {};
         WTF::UncheckedKeyHashMap<String, unsigned> testFileOfModule = {};
         WTF::ListHashSet<String> modulesToEvictOnceLoaded = {};
         // The pending loads those modules are waiting for. Each gets exactly one reaction. Weak, so a load that never settles doesn't keep its global object alive.
@@ -350,6 +352,12 @@ String keyOfImportWhileModuleMocksRun(Zig::GlobalObject*, const String& key, con
 String packageImportKey(Zig::GlobalObject*, const String& key, const String& importer, bool isESM);
 bool isModuleMockWaitingForFactory(Zig::GlobalObject*, const String& key);
 JSC::JSObject* objectHoldingExportOfModuleMock(JSC::JSGlobalObject*, JSC::JSModuleNamespaceObject*, const JSC::Identifier& name);
+// The caller's vi.mockObject(value, { spy: true }) stored a spy in place. See spyingModules.
+void didSpyInPlace(Zig::GlobalObject*, JSC::CallFrame*);
+// The caller does not run again for the next test file, so what it automocks stands for every test file, as what a preload automocks does.
+// It makes what a module mock of a preload gives: it is the factory of that mock, code that the factory called, or the file of a `__mocks__` folder that the mock is made of.
+// Or it is the body of a compiled module other than the test file: a compiled module is not evicted.
+bool runsOnceForEveryTestFile(Zig::GlobalObject*, JSC::CallFrame*);
 #if ENABLE(AOT)
 // The same for the namespace object of a compiled module. Null for any other object.
 JSC::JSObject* compiledMockExportHolder(JSC::JSGlobalObject*, JSC::JSObject* moduleNamespace, const JSC::Identifier& name);
