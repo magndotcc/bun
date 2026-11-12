@@ -291,11 +291,11 @@ impl Sources {
     /// `layer()`, and whether its `development` is what a source states.
     fn laid(&self) -> (Stated, bool) {
         let mut layer = Stated::default();
-        let mut states_development = false;
+        let mut stated_development = None;
         let mut lay = |default: &Stated, source: &Stated| {
             layer.lay_over(default);
             layer.lay_over(source);
-            states_development = source.development.is_some();
+            stated_development = source.development.or(stated_development);
         };
         if let Some(bunfig) = &self.bunfig {
             lay(&Self::BUNFIG_DEFAULT, bunfig);
@@ -308,8 +308,10 @@ impl Sources {
         }
         if let Some(development) = self.server_mode {
             layer.development = Some(development);
-            states_development = false;
+            stated_development = None;
         }
+        // A later default that says the same leaves the statement in force. One that says another value replaces it.
+        let states_development = stated_development.is_some_and(|it| layer.development == Some(it));
         (layer, states_development)
     }
 }
@@ -669,6 +671,9 @@ mod tests {
         assert_eq!(stated(&sources), None);
         assert_eq!(sources.layer().development, Some(false));
         assert!(sources.stated().import_source.is_some());
+        // A bunfig.toml that states the same as that default still states it.
+        sources.bunfig = Some(Stated::of_development(false));
+        assert_eq!(stated(&sources), Some(false));
 
         // The mode of a server is over what `Bun.build()` states.
         let mut sources = Sources {

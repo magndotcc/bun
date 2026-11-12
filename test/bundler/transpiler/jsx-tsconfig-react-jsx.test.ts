@@ -292,6 +292,15 @@ describe("an option that bunfig.toml or a --jsx-* flag states is not taken from 
       "stated jsx",
       `from "stated/jsx-runtime"`,
     ],
+    // A flag with a value means the production runtime, and bunfig.toml states the same.
+    [
+      'bunfig.toml: jsx = "react-jsx" beside a flag',
+      automaticDev,
+      `jsx = "react-jsx"\n`,
+      ["--jsx-import-source=stated"],
+      "stated jsx",
+      `from "stated/jsx-runtime"`,
+    ],
     // tsconfig.json still decides what no other source states.
     [
       "bunfig.toml: only jsxImportSource beside a classic tsconfig.json",
@@ -393,12 +402,13 @@ describe("an option that bunfig.toml or a --jsx-* flag states is not taken from 
   test("a file of the project is the same file through a link to a directory", async () => {
     using dir = tempDir("jsx-stated-over-linked-tsconfig", {
       "real/tsconfig.json": JSON.stringify({ extends: "./base.json" }),
-      "real/base.json": JSON.stringify({ compilerOptions: automatic }),
+      // bunfig.toml states no fragment, so the one of this file shows that the file was read.
+      "real/base.json": JSON.stringify({ compilerOptions: { ...automatic, jsxFragmentFactory: "fromBase" } }),
       "real/bunfig.toml": `jsx = "react"\njsxFactory = "stated"\n`,
-      "real/m.jsx": `export const m = <div />;`,
+      "real/m.jsx": `export const m = [<div />, <></>];`,
       // Through the link "real/app", "../tsconfig.json" is the tsconfig.json of the project.
       "real/packages/app/tsconfig.json": JSON.stringify({ extends: "../tsconfig.json" }),
-      "real/packages/app/p.jsx": `export const p = <div />;`,
+      "real/packages/app/p.jsx": `export const p = [<div />, <></>];`,
     });
     const real = join(String(dir), "real");
     const link = join(String(dir), "link");
@@ -416,10 +426,8 @@ describe("an option that bunfig.toml or a --jsx-* flag states is not taken from 
       return { calls: stdout.match(/\w+\(("div"|\w+)/g), exitCode };
     };
     const [linkToProject, linkInProject] = await Promise.all([calls(join(link, "m.jsx")), calls(join("app", "p.jsx"))]);
-    expect({ linkToProject, linkInProject }).toEqual({
-      linkToProject: { calls: ['stated("div"'], exitCode: 0 },
-      linkInProject: { calls: ['stated("div"'], exitCode: 0 },
-    });
+    const ofProject = { calls: ['stated("div"', "stated(fromBase"], exitCode: 0 };
+    expect({ linkToProject, linkInProject }).toEqual({ linkToProject: ofProject, linkInProject: ofProject });
   });
 });
 
